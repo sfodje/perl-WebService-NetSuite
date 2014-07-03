@@ -28,9 +28,6 @@ our $soap_href = "https://webservices.%s/services/NetSuitePort_$nsversion";
 our $sso_href  = 'https://checkout.%s/app/site/backend/sitesso.nl';
 our $cart_href = 'http://shopping.%s/app/site/backend/additemtocart.nl';
 
-our $debug            = 0; # global setting for deb(), trigger on pkg variable
-our $debugFile        = 'NetSuite.dbg';
-
 # defined as globals so these don't appear when printing Dumper($self):
 our $record_namespaces = &WebService::NetSuite::Config::RecordNamespaces;
 our $search_namespaces = &WebService::NetSuite::Config::SearchNamespaces;
@@ -38,9 +35,8 @@ our $record_types      = &WebService::NetSuite::Config::RecordTypes;
 our $search_types      = &WebService::NetSuite::Config::SearchTypes;
 our $record_fields     = &WebService::NetSuite::Config::RecordFields;
 
-has 'debug'           => ( is => 'rw', trigger => \&setDebug );
-has 'debugfile'       => ( is => 'rw', trigger => \&setDebugFile,
-                           default => 'NetSuite.dbg' );
+has 'debug'           => ( is => 'rw', default => 0 );
+has 'debugFile'       => ( is => 'rw', default => 'NetSuite.dbg' );
 has 'time'            => ( is => 'rw' );
 has 'company'         => ( is => 'ro' );
 has 'rsa_private_key' => ( is => 'ro' );
@@ -75,22 +71,12 @@ has 'cart_href'       => (is            => 'ro',
                           lazy          => 1,
                           default       => sub {
                               my $self = shift;
-                              my $href = sprintf($cart_href, self->nsdomain);
+                              my $href = sprintf($cart_href, $self->nsdomain);
                               return $href;
                           }
 );
 
 has 'soap' => (is => 'ro', writer => '_set_soap');
-
-sub setDebug {
-    my $self = shift;
-    $debug = $self->debug;
-}
-
-sub setDebugfile {
-    my $self = shift;
-    $debugFile = $self->debugfile;
-}
 
 sub setSandbox {
     my $self = shift;
@@ -108,9 +94,9 @@ sub nvl {
 }
 
 sub deb {
-    my ($msg) = @_;
-    if ($debug) {
-        open LOG, ">>NetSuite.dbg";
+    my ($self,$msg) = @_;
+    if ($self->debug) {
+        open LOG, ">>" . $self->debugFile;
         print LOG $msg;
         close LOG;
     }
@@ -118,69 +104,86 @@ sub deb {
 
 # debf takes format like printf
 sub debf {
+    my $self = shift;
     my $fmt = shift;
-    deb sprintf($fmt, @_);
+    $self->deb(sprintf($fmt, @_));
 }
 
 sub fatal {
-    my ($msg) = @_;
+    my ($self,$msg) = @_;
     my ($package, $filename, $line, $sub, $hasargs,
         $wantarray, $evaltext, $is_require, $hints, $bitmask, $hinthash)
          = caller(1);
     $sub =~ s/::BUILD/->new/ || $sub =~ s/::([^:]*)/->$1/;
-    deb   "FATAL ERROR IN $sub: $msg";
+    $self->deb("FATAL ERROR IN $sub: $msg");
     croak "FATAL ERROR IN $sub: $msg";
 }
 
 sub logMessage {
-  my ($in) = @_;
+  my ($self,$in) = @_;
   if (!defined($in)) {return;}
 #  if ($in->class() eq "HTTP::Request") {
 #    # do something...
-#    deb $in->contents;
+#    $self->deb($in->contents);
 #  } elsif (class($in) eq "HTTP::Response") {
-#    deb $in->contents;
+#    $self->deb($in->contents);
 #  } else {
-#    deb Dumper(@_);
+#    $self->deb(Dumper(@_));
 #  }
-    deb $in;
+  $self->deb($in);
+#        open LOG, ">>" . "NetSuite.dbg";
+#        print LOG $in;
+#        close LOG;
+
 }
 
 sub BUILD { # sub new (this is the constructor)
     my $self = shift;
     my $hash = shift;
 
-    if ($debug) { unlink "NetSuite.dbg"; }
+    if ($self->debug && !$::nsunlink) { unlink $self->debugFile; $::nsunlink = 1}
 
     if (exists $hash->{nsaccount} && exists $hash->{nsaccountName}) {
-        fatal "nsaccount and nsaccountName are mutually exclusive options\n";
+        $self->fatal("nsaccount and nsaccountName are mutually exclusive options\n");
     }
 
     if (exists $hash->{nsrole} && exists $hash->{nsroleName}) {
-        fatal "nsrole and nsroleName are mutually exclusive options\n";
+        $self->fatal("nsrole and nsroleName are mutually exclusive options\n");
     }
 
     if (exists $hash->{nsdomain} && exists $hash->{sandbox}) {
-        fatal "nsdomain and sandbox are mutually exclusive options\n";
+        $self->fatal("nsdomain and sandbox are mutually exclusive options\n");
     }
 
     if (defined($self->nsroleName) && defined($self->nsaccountName)) {
-            $self->getAccountInfo;
+        $self->getAccountInfo;
     }
 
     if ((!defined $self->nsrole) || (!defined $self->nsaccount)
             || (!defined $self->nsdomain)) {
-        fatal "One of the following combinations must be set:
+        $self->deb(Dumper($self));
+        $self->fatal("One of the following combinations must be set:
 1) nsroleName, nsaccountName
     -or-
-2) nsrole (role id), nsaccount (account id), and nsdomain (netsuite host beginning with https://)";
+2) nsrole (role id), nsaccount (account id), and nsdomain (netsuite host beginning with https://)");
     }
 
-    if ($debug) { SOAP::Lite->import(+trace => [debug => \&logMessage ]); }
+    #SOAP::Lite->import(+trace => [debug => \&logMessage]) if ($self->debug);
     $self->_set_soap(SOAP::Lite->new(readable => 1));
     my $url = sprintf $soap_href, $self->nsdomain;
-    deb "url=$url\n";
+    $self->deb("url=$url\n");
     $self->soap->proxy($url);
+    #print "DEBUG: soap version=" . $self->soap->soapversion . "\n";
+    #print "DEBUG: debug=" . $self->debug . "\n";
+    if ($self->debug) {
+        print "calling soap->on_debug\n";
+        #$self->soap->proxy()->setDebugLogger(sub {$self->logMessage(@_);});
+        $self->soap->on_debug(sub {$self->logMessage(@_);});
+        print "done\n";
+    }
+    #print "SOAP:\n" . Dumper($self->soap);
+    #exit;
+    
 
     my $systemNamespaces = &WebService::NetSuite::Config::SystemNamespaces;
     for my $mapping ( keys %{$systemNamespaces} ) {
@@ -202,7 +205,7 @@ sub getAccountInfo {
     my $roleId      = $self->nsrole;
     my $accountId   = $self->nsaccount;
 
-    my $wsUrl = '';
+    my $ca = undef;    # current account
 
     my @ua_args = (keep_alive => 1);
     my @credentials = ("$host:80", '', $username, $password);
@@ -211,6 +214,8 @@ sub getAccountInfo {
     #my $request = new HTTP::Request("GET", $url);
     #my $response = $ua->request($request);
 
+    $self->deb("URL = $url\n");
+    $self->deb("username, password = $username, $password\n");
     my $req = new HTTP::Request GET => $url;
     $req->authorization_basic($username, $password);
     $req->header('Authorization' => "NLAuth nlauth_email=$username,nlauth_signature=$password");
@@ -221,41 +226,50 @@ sub getAccountInfo {
     if ($res->is_success) {
         #deb($res->content."\n");
         $json = decode_json($res->content);
-        deb Dumper($json)."\n";
+        $self->deb(Dumper($json)."\n");
         #deb($json->{'Status'}."\n");
     } else {
-        deb($res->status_line, "\n");
+        print "ERROR: " . $res->status_line . "\n";
+        $self->deb("ERROR: " . $res->status_line . "\n");
         return; # error occurred - exit
     }
 
+    $self->{accountInfo} = $json;
     #deb(@{$json}."\n");
-    deb "looking for instance=$instance, role=$role\n\n";
-    debf "%-25s %-30s %s\n", 'Account', 'Role', 'URL';
-    debf "%-25s %-30s %s\n", '-------', '----', '---';
+    $self->deb("looking for instance=$instance, role=$role\n\n");
+    $self->debf("%-40s %-30s %s\n", 'Account', 'Role', 'URL');
+    $self->debf("%-40s %-30s %s\n", '-------', '----', '---');
     my $x;
     for($x = 0; $x < @{$json}; $x++) {
         my $a = $json->[$x]->{'account'}->{'name'};
         my $r = $json->[$x]->{'role'}->{'name'};
         my $u = $json->[$x]->{'dataCenterURLs'}->{'webservicesDomain'};
-        debf "%-25s %-30s %s\n", $a, $r, $u;
+        my $d = $u;
+        $d =~ s/https:\/\/webservices\.//;
+        $json->[$x]->{domain} = $d;
+        $self->debf("%-40s %-30s %s\n", $a, $r, $u);
         if ($a eq $instance && $r eq $role) {
-            deb 'Matched!\n';
-            $wsUrl = $u;
-            last; # break out of for loop
+            $self->deb("Matched!\n");
+            $ca = $json->[$x];
+            #last; # break out of for loop
+            # we don't break out so that we can show all envs and fill in 
+            # domain for each
         }
     }
-    if ($wsUrl eq '') {
-        fatal "Could not find instance/role - aborting\n";
+    if (!defined $ca) {
+        $self->fatal("Could not find instance/role - aborting\n");
     }
 
-    $wsUrl =~ s/https:\/\/webservices\.//;
-    $self->_set_nsdomain($wsUrl);
-    $self->_set_nsrole($json->[$x]->{'role'}->{'internalId'});
-    $self->_set_nsaccount($json->[$x]->{'account'}->{'internalId'});
-    $self->_set_nsroleName($json->[$x]->{'role'}->{'name'});
-    $self->_set_nsaccountName($json->[$x]->{'account'}->{'name'});
-    #my $endpoint = $wsUrl . "/wsdl/v2013_2_0/netsuite.wsdl";
-    deb 'self right after getAccountInfo:\n' . Dumper($self);
+    #deb "ca=\n" . Dumper($ca);
+
+    $self->_set_nsdomain(       $ca->{'domain'});
+    $self->_set_nsrole(         $ca->{'role'}->{'internalId'});
+    $self->_set_nsroleName(     $ca->{'role'}->{'name'});
+    $self->_set_nsaccount(      $ca->{'account'}->{'internalId'});
+    $self->_set_nsaccountName(  $ca->{'account'}->{'name'});
+    #my $endpoint = $ca->{'dataCenterURLs'}->{'webservicesDomain'}
+    #               . "/wsdl/v2013_2_0/netsuite.wsdl";
+    $self->deb("self right after getAccountInfo:\n" . Dumper($self));
 }
 
 sub getRequest {
@@ -662,6 +676,51 @@ sub delete {
     }
 }
 
+sub deleteListResults {
+    my $self = shift;
+    if ( defined $self->{DELETELIST_RESULTS} ) {
+        return $self->{DELETELIST_RESULTS};
+    }
+    else { return; }
+}
+
+sub deleteList {
+    my ( $self, $list ) = @_;
+    my @delList = ();
+    #undef my %req;
+
+    #$req{'type'}        = $recordType;
+    #$req{'xsi:type'}    = namespace('core') . ':RecordRef';
+
+    if (ref($list) eq'ARRAY') {
+        foreach my $recref (@{$list}) {
+            $recref->{'xsi:type'} = namespace('core') . ':RecordRef';
+            push @delList, SOAP::Data->name('baseRef')->attr($recref);
+        }
+    } else {
+        $self->fatal("deleteList requires an array reference");
+    }
+
+    $self->soap->on_action( sub { return 'deleteList'; } );
+    my $som = $self->soap->deleteList(
+        $self->_passport,
+        @delList
+    );
+
+    if ( $som->fault ) { $self->error; }
+    else {
+        my $response = $self->_parseResponse;
+        $self->{DELETELIST_RESULTS} = $response->{'writeResponseList'};
+        my $c = 0;
+        foreach my $s (@{$response->{'writeResponseList'}}) {
+            if ($s->{'statusIsSuccess'} eq 'true') {
+                $c++;
+            }
+        }
+        return $c;
+    }
+}
+
 sub _passport {
     my $self = shift;
 
@@ -792,13 +851,13 @@ sub add {
     if (!defined($ns)) {
         my $i = index($recordType, ':');
         if ($i < 0) {
-            fatal "Invalid recordType: $recordType!";
+            $self->fatal("Invalid recordType: $recordType!");
         } else {
             $ns = substr($recordType, 0, $i);
             $recordType = substr($recordType, $i+1);
         }
     }
-    deb "namespace for $recordType is " . $ns . "\n"; 
+    $self->deb("namespace for $recordType is " . $ns . "\n");
     my %recAttrs = (
                 'xsi:type' => $ns . ':' . ucfirst($recordType)
     );
@@ -839,7 +898,7 @@ sub add {
 sub upsert {
     my ( $self, $recordType, $recordRef, $recordAttrs ) = @_;
 
-    fatal("Invalid recordType: $recordType!")
+    $self->fatal("Invalid recordType: $recordType!")
       if !defined $record_namespaces->{$recordType};
 
     my %recAttrs = (
@@ -1200,7 +1259,7 @@ sub _parseResponse {
     if ($method eq 'error') {
         # if the error is NOT being produced by the login function, the
         # structure is different, so the parsing must be different
-        deb 'error body=' . Dumper($body);
+        $self->deb('error body=' . Dumper($body));
         if (ref $c->[0]->{content}->[0]->{content} eq 'ARRAY' ) {
             return &_parseFamily($c->[0]->{content}->[0]->{content});
         } elsif (nvl($c->[2]->{content}->[0]->{content}->[0]->{name},'')
@@ -1209,8 +1268,10 @@ sub _parseResponse {
         } elsif ($c->[2]->{content}->[0]->{name} eq 'ns1:hostname') {
             return &_parseFamily( $c );
         } else {
-            fatal 'Unable to parse error response!  Contact module author..';
+            $self->fatal('Unable to parse error response!  Contact module author..');
         }
+    } elsif ( $method =~ /List$/ ) {
+        return &_parseFamily($c);
     } elsif ( ref $c->[0]->{content} eq 'ARRAY' ) {
         return &_parseFamily($c->[0]->{content});
     } else {

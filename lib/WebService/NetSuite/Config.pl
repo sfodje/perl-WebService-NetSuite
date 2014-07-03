@@ -26,8 +26,8 @@ $ua->env_proxy;
 
 my $debug = 1;
 our $version='2013_2';
-my $wsdl = 'https://webservices.netsuite.com/wsdl/v2013_2_0/netsuite.wsdl';
-my $searchCommon = 'https://webservices.netsuite.com/xsd/platform/v2013_2_0/common.xsd';
+my $wsdl = 'https://webservices.netsuite.com/wsdl/v'.$version.'_0/netsuite.wsdl';
+my $searchCommon = 'https://webservices.netsuite.com/xsd/platform/v'.$version.'_0/common.xsd';
 
 # return full namespace for core, messages, common (all are in .platform)
 sub namespace {
