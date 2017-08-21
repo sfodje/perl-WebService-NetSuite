@@ -685,8 +685,7 @@ sub map_sso {
 
     $self->soap->on_action( sub { return 'mapSso'; } );
     my $som = $self->soap->mapSso(
-        $self->_passport,
-        SOAP::Data->name(
+	SOAP::Data->name(
             'ssoCredentials' => \SOAP::Data->value(
                 SOAP::Data->name( 'email'    => $email ),
                 SOAP::Data->name( 'password' => $password ),
