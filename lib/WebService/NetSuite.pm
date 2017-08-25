@@ -20,7 +20,7 @@ use Encode;
 use WebService::NetSuite::Config;
 
 our $ME = 'WebService::NetSuite';
-our $VERSION = '0.06';
+our $VERSION = '0.05';
 
 our $nsversion = "2013_2";
 
