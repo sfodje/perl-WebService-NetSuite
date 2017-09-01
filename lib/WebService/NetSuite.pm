@@ -20,13 +20,14 @@ use Encode;
 use WebService::NetSuite::Config;
 
 our $ME = 'WebService::NetSuite';
-our $VERSION = '0.05';
+our $VERSION = '0.06';
 
 our $nsversion = "2013_2";
 
-our $soap_href = "https://webservices.%s/services/NetSuitePort_$nsversion";
-our $sso_href  = 'https://checkout.%s/app/site/backend/sitesso.nl';
-our $cart_href = 'http://shopping.%s/app/site/backend/additemtocart.nl';
+our $default_domain = 'netsuite.com';
+our $soap_href      = "https://webservices.%s/services/NetSuitePort_$nsversion";
+our $sso_href       = 'https://checkout.%s/app/site/backend/sitesso.nl';
+our $cart_href      = 'http://shopping.%s/app/site/backend/additemtocart.nl';
 
 our $debug            = 0; # global setting for deb(), trigger on pkg variable
 our $debugFile        = 'NetSuite.dbg';
@@ -50,9 +51,10 @@ has 'nsrole'          => ( is => 'ro', writer   => '_set_nsrole' );
 has 'nsaccount'       => ( is => 'ro', writer   => '_set_nsaccount' );
 has 'nsroleName'      => ( is => 'ro', writer   => '_set_nsroleName' );
 has 'nsaccountName'   => ( is => 'ro', writer   => '_set_nsaccountName' );
+has 'auto_nsdomain'   => ( is => 'rw', isa => 'Bool' );
 has 'nsdomain'        => ( is => 'ro',
                            writer       => '_set_nsdomain',
-                           default      => 'netsuite.com' );
+                           builder      => '_build_nsdomain' );
 has 'sandbox'         => ( is           => 'ro',
                            default      => 0,
                            writer       => '_set_sandbox',
@@ -80,7 +82,52 @@ has 'cart_href'       => (is            => 'ro',
                           }
 );
 
-has 'soap' => (is => 'ro', writer => '_set_soap');
+has 'soap' => ( is => 'ro', builder => '_build_soap' );
+
+sub _build_soap {
+    my ( $self ) = @_;
+
+    return _build_soap_client( sprintf $soap_href, $self->nsdomain );
+}
+
+sub _build_nsdomain {
+    my ( $self ) = @_;
+
+    return $default_domain unless $self->auto_nsdomain;
+
+    my $soap = _build_soap_client( sprintf $soap_href, $default_domain );
+
+    $soap->on_action( sub { return 'getDataCenterUrls'; } );
+    $soap->on_fault( sub  { die $_->fault->{faultstring} } );
+    my $som = $soap->getDataCenterUrls(
+        $self->_passport,
+        SOAP::Data->name( 'account' )->value( $self->nsaccount )->type( 'xsd:string' )
+    );
+
+    my $result            = $som->result->{dataCenterUrls};
+    my $datacenter_domain = $result->{webservicesDomain} =~ s/^.+webservices\.//r;
+
+    die unless $datacenter_domain;
+    return $datacenter_domain;
+}
+
+
+sub _build_soap_client {
+    my ( $url ) = @_;
+
+    SOAP::Lite->import(+trace => [debug => \&logMessage ]) if $debug;
+    deb "url=$url\n";
+
+    my $soap = SOAP::Lite->new( proxy => $url, readable => 1 );
+    my $systemNamespaces = &WebService::NetSuite::Config::SystemNamespaces;
+
+    for my $mapping ( keys %{$systemNamespaces} ) {
+        $soap->serializer->register_ns( $systemNamespaces->{$mapping}, $mapping );
+    }
+
+    return $soap;
+}
+
 
 sub setDebug {
     my $self = shift;
@@ -174,18 +221,6 @@ sub BUILD { # sub new (this is the constructor)
 1) nsroleName, nsaccountName
     -or-
 2) nsrole (role id), nsaccount (account id), and nsdomain (netsuite host beginning with https://)";
-    }
-
-    if ($debug) { SOAP::Lite->import(+trace => [debug => \&logMessage ]); }
-    $self->_set_soap(SOAP::Lite->new(readable => 1));
-    my $url = sprintf $soap_href, $self->nsdomain;
-    deb "url=$url\n";
-    $self->soap->proxy($url);
-
-    my $systemNamespaces = &WebService::NetSuite::Config::SystemNamespaces;
-    for my $mapping ( keys %{$systemNamespaces} ) {
-        $self->soap->serializer->register_ns( $systemNamespaces->{$mapping},
-            $mapping );
     }
 }
 
@@ -798,7 +833,7 @@ sub add {
             $recordType = substr($recordType, $i+1);
         }
     }
-    deb "namespace for $recordType is " . $ns . "\n"; 
+    deb "namespace for $recordType is " . $ns . "\n";
     my %recAttrs = (
                 'xsi:type' => $ns . ':' . ucfirst($recordType)
     );
@@ -947,14 +982,14 @@ sub attachOrDetach {
     #        attachedRecord  => nsRecRef('file',          $fid)
     #    };
     #    $ns->attach($attachRequest) or nsfatal 'error attaching';
-    # 
+    #
     #   SOAP message will look something like this:
     #
     # <attach>
     #   <attachReferece xsi:type="core_2013_2.platform:AttachBasicReference">
     #     <attachTo internalId="2029" type="expenseReport"
     #               xsi:type="core_2013_2.platform:RecordRef" />
-    #     
+    #
     #     <attachedRecord internalId="5445" type="file"
     #               xsi:type="core_2013_2.platform:RecordRef" />
     #   </attachReferece>
@@ -1084,7 +1119,7 @@ sub _parseRequest {
                       ->value( $listElement->{value} )
                       ; # ->attr( { 'xsi:type' => 'xsd:string' } );
                     push @listElements, SOAP::Data->new( %{$element} );
-                } else { 
+                } else {
                     while ( my ( $key, $value ) = each %{$listElement} ) {
                         push @sequence,
                           $self->_parseRequestField(
@@ -1094,7 +1129,7 @@ sub _parseRequest {
                     push @listElements,
                       SOAP::Data->name(
                         $listElementName => \SOAP::Data->value(@sequence) );
-                } 
+                }
             }
 
             if ( grep $_ eq $key, qw(addressbookList creditCardsList) ) {
@@ -1215,7 +1250,7 @@ sub _parseResponse {
         return &_parseFamily($c->[0]->{content});
     } else {
         return;
-    } 
+    }
 }
 
 sub _parseFamily {
@@ -1235,7 +1270,7 @@ sub _parseFamily {
  #$parse_ref->{$node->{name}} = &_parseFamily($node->{content}->[0]->{content});
                         push @{ $parse_ref->{ $node->{name} } },
                           &_parseFamily( $node->{content} );
-                    } else { 
+                    } else {
                         if ( $node->{name} =~ /List$/ ) {
                             if (scalar @{ $node->{content}->[0]->{content} } >
                                 1 ) {
@@ -1262,7 +1297,7 @@ sub _parseFamily {
                     }
                 }
                 else { $parse_ref = &_parseNode( $node, $parse_ref ); }
-            } else { 
+            } else {
                 if ( $node->{name} =~ /(List|Matrix)$/ ) {
                     if ( scalar @{ $node->{content}->[0]->{content} } > 1 ) {
                         for ( 0 .. scalar @{ $node->{content} } - 1 ) {
@@ -1361,7 +1396,7 @@ sub _parseNode {
         $hash_ref->{name} =~ s/^(.*:)?(.*)$/$2/g;
     }
 
-    if ( scalar @{ $hash_ref->{content} } == 1 ) { 
+    if ( scalar @{ $hash_ref->{content} } == 1 ) {
  # if the name of the inner attribute is "name", then only worry about the value
         if ( defined $hash_ref->{content}->[0]->{name} ) {
             $hash_ref->{content}->[0]->{name} =~ /^(.*:)?(name|value)$/;
@@ -1405,7 +1440,7 @@ WebService::NetSuite - A perl  interface to the NetSuite SuiteTalk (Web Services
 =head1 SYNOPSIS
 
     use WebService::NetSuite;
-  
+
     my $ns = WebService::NetSuite->new({
         nsemail         => 'blarg@foo.com',
         nspassword      => 'foobar123',
@@ -1548,7 +1583,7 @@ updated must be present inside the hash reference.
 
     my $internalId = $ns->update('customer', $customer);
     print "I have updated a customer with internalId $internalId\n";
-    
+
 If successful this method will return the internalId of the updated record
 Otherwise, the error details are sent to the errorResults method.
 
@@ -1586,9 +1621,9 @@ I would write:
             { name => 'isInactive', value => 0 } # 0 means false
         ]
     };
-    
+
     $ns->search('customer', $query);
-    
+
 Notice that the query is a hash reference of search types.  Foreach search type
 in the hash there is an array of hashes for each field in the criteria.
 
@@ -1623,12 +1658,12 @@ invoices, and cash sales, that have transpired over the last year.
                     { value => '_salesOrder' },
                     { value => '_invoice' },
                     { value => '_cashSale' },
-                ]   
+                ]
             },
             { name => 'tranDate', value => 'previousOneYear', attr => { operator => 'onOrAfter' } },
         ],
     };
-    
+
 From that list, you want to see if the customer associated with each transaction
 has a valid email address on file, and is not a lead or a prospect.  The
 joined query would look like this:
@@ -1640,7 +1675,7 @@ joined query would look like this:
                     { value => '_salesOrder' },
                     { value => '_invoice' },
                     { value => '_cashSale' },
-                ]   
+                ]
             },
             { name => 'tranDate', value => 'previousOneYear', attr => { operator => 'onOrAfter' } },
         ],
@@ -1650,11 +1685,11 @@ joined query would look like this:
                     { attr => { internalId => '13' } },
                     { attr => { internalId => '15' } },
                     { attr => { internalId => '16' } },
-                ]                                  
+                ]
             },
         ],
     };
-    
+
 Notice that each hash reference within either the basic or customerJoin
 arrays has a "name" and "value" key.  In some cases you also have an
 "attr" key.  This "attr" key is another hash reference that contains
@@ -1689,7 +1724,7 @@ that exists in a customer's record.  These custom fields are located in the
             },
         ],
     };
-    
+
 Notice that we have added a new layer to the "attr" key called 'xsi:type'.
 That is because this module cannot determine the custom field types for YOUR
 particular NetSuite account in real time.  Thus, you have to provide them
@@ -1706,7 +1741,7 @@ about the results, or extended information about the results.
 
     # perform a search and only return 10 records per page
     $ns->search('customer', $query, { pageSize => 10 });
-    
+
     # perform a search and only provide basic information about the results
     $ns->search('customer', $query, { bodyFieldsOnly => 0 });
 
@@ -1775,7 +1810,7 @@ It is a hash reference that contains the record list and details of the search.
         'pageIndex' => '1', # the current page
         'statusIsSuccess' => 'true'
     }
-    
+
 The "recordList" field is an array of hashes containing a record's values.
 Refer to the get method for details on the understanding of a record's data
 structure.
@@ -1790,16 +1825,16 @@ records, when there are 500 total records.  You could quickly jump to the
 301-400 block of records by entering the pageIndex value.
 
     $ns->search('customer', $query);
-    
+
     # determine my result set
     my $totalPages = $ns->searchResults->{totalPages};
     my $pageIndex = $ns->searchResults->{pageIndex};
     my $totalRecords = $ns->searchResults->{totalRecords};
-    
+
     # output a message
     print "I found $totalRecords records!\n";
     print "Displaying page $pageIndex of $totalPages\n";
-    
+
     my $jumpToPage = 3;
     $ns->searchMore($jumpToPage);
     print "Jumping to page $jumpToPage\n";
@@ -1841,13 +1876,13 @@ The first 2 examples are identical:
         my $firstName = $ns->getResults->{firstName};
         print "I got a customer with the first name $firstName\n";
     }
-    
+
     # to output the complete data structure
     my $getSuccess = $ns->get('customer', 1234);
     if ($getSuccess) {
         print Dumper($ns->getResults);
     }
-    
+
 If the operation in successful, a true value (1) is returned,
 otherwise it is undefined.
 
@@ -1908,7 +1943,7 @@ information for a given record.  (Some fields were omitted)
         'dateCreated' => '2006-07-22T00:00:00.000-07:00',
         'lastModifiedDate' => '2008-01-28T19:28:00.000-08:00',
     };
-    
+
 It is important to note how some of this data is returned.
 
 Notice that the internalId for the record is labeled "recordInternalId"
@@ -1936,7 +1971,7 @@ write:
             if (scalar @{ $ns->getResults->{creditCardsList} } == 1) {
                 print "This customer has a default credit card!\n";
             }
-            else { 
+            else {
                 for my $creditCard (@{ $ns->getResults->{creditCardsList} }) {
                     if ($creditCard->{ccDefault} eq 'true') {
                         print "This customer has a default credit card!\n";
@@ -1951,12 +1986,12 @@ write:
     else {
         # my get request failed, better check the errorResults method
     }
-    
+
 Or, if I was more concerned with checking this customers last activity, I
 might write:
 
     $ns->get('customer', 1234);
-    
+
     # assuming the request was successful
     my $internalId = $ns->getResults->{recordInternalId};
     my $lastModifiedDate = $ns->getResults->{lastModifiedDate};
@@ -1970,7 +2005,7 @@ acceptable values for the "terms" field of a customer you could submit
 a request like:
 
     $ns->getSelectValue('customer_terms');
-    
+
 If successful, a call to the getResults method, will return a hash reference
 that looks like this:
 
@@ -2004,7 +2039,7 @@ that looks like this:
         'totalRecords' => '6',
         'statusIsSuccess' => 'true'
     }
-    
+
 If the request fails, the error details are sent to the errorResults method.
 
 From these results, we now know that the "terms" field of a customer can be
@@ -2031,7 +2066,7 @@ Record Types.  For instance, if you wanted to know all of the
 custom fields for the body of a transaction, you might write:
 
     $ns->getCustomization('transactionBodyCustomField');
-    
+
 If successful, a call to the getResults method, will return a hash reference
 that looks like this:
 
@@ -2100,7 +2135,7 @@ As an example, to attach a file to an expenseReport, you would do the following:
         my ($rectype, $id) = @_;
         return  { type => $rectype, internalId => $id };
     }
- 
+
     my $attachRequest = {
         attachTo        => nsRecRef('expenseReport', $erId),
         attachedRecord  => nsRecRef('file',          $fid)
@@ -2134,11 +2169,11 @@ may look like this:
         'faultstring' => 'com.netledger.common.schemabean.NLSchemaBeanException:
 <<somefield>> not found on {urn:relationships_2_6.lists.webservices.netsuite.com}Customer'
     };
-    
+
 Thus, a typical error-prepared script might look like this:
 
     $ns->login or die "Can't connect to NetSuite!\n";
-    
+
     if ($ns->search('customer', $query)) {
         for my $record (@{ $ns->searchResults->{recordList} }) {
             if ($ns->get('customer', $record->{recordInternalId})) {
@@ -2153,17 +2188,17 @@ Thus, a typical error-prepared script might look like this:
         }
     }
     else {
-        
+
         # I really want to know why my search would fail
         # lets output the error and message
         my $message = $ns->errorResults->{message};
         my $code = $ns->errorResults->{code};
-        
+
         print "Unable to perform search!\n";
         print "($code): $message\n";
-        
+
     }
-    
+
     $ns->logout; # no error handling here, if this fails, oh well.
 
 For a complete listing of errors and associated messages, consult the
